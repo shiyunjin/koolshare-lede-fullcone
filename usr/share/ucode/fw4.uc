@@ -1,17 +1,17 @@
-let fs = require("fs");
-let uci = require("uci");
-let ubus = require("ubus");
+const fs = require("fs");
+const uci = require("uci");
+const ubus = require("ubus");
 
-let STATEFILE = "/var/run/fw4.state";
+const STATEFILE = "/var/run/fw4.state";
 
-let PARSE_LIST   = 0x01;
-let FLATTEN_LIST = 0x02;
-let NO_INVERT    = 0x04;
-let UNSUPPORTED  = 0x08;
-let REQUIRED     = 0x10;
-let DEPRECATED   = 0x20;
+const PARSE_LIST   = 0x01;
+const FLATTEN_LIST = 0x02;
+const NO_INVERT    = 0x04;
+const UNSUPPORTED  = 0x08;
+const REQUIRED     = 0x10;
+const DEPRECATED   = 0x20;
 
-let ipv4_icmptypes = {
+const ipv4_icmptypes = {
 	"any": [ 0xFF, 0, 0xFF ],
 	"echo-reply": [ 0, 0, 0xFF ],
 	"pong": [ 0, 0, 0xFF ], /* Alias */
@@ -66,7 +66,8 @@ let ipv4_icmptypes = {
 	"address-mask-reply": [ 18, 0, 0xFF ]
 };
 
-let ipv6_icmptypes = {
+const ipv6_icmptypes = {
+	/* "name": [ type-code, code-min, code-max ] */
 	"destination-unreachable": [ 1, 0, 0xFF ],
 	"no-route": [ 1, 0, 0 ],
 	"communication-prohibited": [ 1, 1, 1 ],
@@ -91,6 +92,11 @@ let ipv6_icmptypes = {
 	"echo-reply": [ 129, 0, 0xFF ],
 	"pong": [ 129, 0, 0xFF ], /* Alias */
 
+	/* only code zero (0) */
+	"multicast-listener-query": [ 130, 0, 0xFF ],
+	"multicast-listener-report": [ 131, 0, 0xFF ],
+	"multicast-listener-done": [ 132, 0, 0xFF ],
+
 	"router-solicitation": [ 133, 0, 0xFF ],
 
 	"router-advertisement": [ 134, 0, 0xFF ],
@@ -101,10 +107,66 @@ let ipv6_icmptypes = {
 	"neighbour-advertisement": [ 136, 0, 0xFF ],
 	"neighbor-advertisement": [ 136, 0, 0xFF ], /* Alias */
 
-	"redirect": [ 137, 0, 0xFF ]
+	"redirect": [ 137, 0, 0xFF ],
+
+	/* codes 0, 1, 255 */
+	"router-renumbering": [ 138, 0, 0xFF ],
+
+	/* codes 0, 1, 2 */
+	"node-info-query": [ 139, 0, 0xFF ],
+	/* codes 0, 1, 2 */
+	"node-info-response": [ 140, 0, 0xFF ],
+
+	"inverse-neighbour-discovery-solicitation-message": [ 141, 0, 0xFF ],
+	"inverse-neighbor-discovery-solicitation-message": [ 141, 0, 0xFF ], /* Alias */
+
+	"inverse-neighbour-discovery-advertisement-message": [ 142, 0, 0xFF ],
+	"inverse-neighbor-discovery-advertisement-message": [ 142, 0, 0xFF ], /* Alias */
+
+	"v2-multicast-listener-report": [ 143, 0, 0xFF ],
+
+	"home-agent-address-discovery-request-message": [ 144, 0, 0xFF ],
+	"home-agent-address-discovery-reply-message": [ 145, 0, 0xFF ],
+
+	"mobile-prefix-solicitation": [ 146, 0, 0xFF ],
+	"mobile-prefix-advertisement": [ 147, 0, 0xFF ],
+
+	/* SEND */
+	"certification-path-solicitation-message": [ 148, 0, 0xFF ],
+	"certification-path-advertisement-message": [ 149, 0, 0xFF ],
+
+	"seamoby-protocol-message": [ 150, 0, 0xFF ],
+
+	/* IPv6 multicast: FF02:0:0:0:0:0:0:6A, no code fields */
+	"multicast-router-advertisement": [ 151, 0, 0xFF ],
+	"multicast-router-solicitation": [ 152, 0, 0xFF ],
+	"multicast-router-termination": [ 153, 0, 0xFF ],
+
+	/* codes 0-5, 6-255 */
+	"fmipv6-message": [ 154, 0, 0xFF ],
+
+	"rpl-control-message": [ 155, 0, 0xFF ],
+
+	"ilnpv6-locator-update-message": [ 156, 0, 0xFF ],
+
+	/* codes 0-4, 5-15 */
+	"duplicate-address-request": [ 157, 0, 0xFF ],
+	/* codes 0-4, 5-15 */
+	"duplicate-address-confirmation": [ 158, 0, 0xFF ],
+
+	/* Multicast Protocol for Low-Power */
+	"mpl-control-message": [ 159, 0, 0xFF ],
+
+	/* codes 0, 1-255 */
+	"extended-echo-request": [ 160, 0, 0xFF ],
+	"extended-ping": [ 160, 0, 0xFF ],  /* Alias */
+
+	/* codes 0-4, 5-255 */
+	"extended-echo-reply": [ 161, 0, 0xFF ],
+	"extended-pong": [ 161, 0, 0xFF ]  /* Alias */
 };
 
-let dscp_classes = {
+const dscp_classes = {
 	"CS0": 0x00,
 	"CS1": 0x08,
 	"CS2": 0x10,
@@ -131,14 +193,19 @@ let dscp_classes = {
 };
 
 function to_mask(bits, v6) {
-	let m = [];
+	let m = [], n = false;
 
-	if (bits < 0 || bits > (v6 ? 128 : 32))
+	if (bits < 0) {
+		n = true;
+		bits = -bits;
+	}
+
+	if (bits > (v6 ? 128 : 32))
 		return null;
 
 	for (let i = 0; i < (v6 ? 16 : 4); i++) {
 		let b = (bits < 8) ? bits : 8;
-		m[i] = (0xff << (8 - b)) & 0xff;
+		m[i] = (n ? ~(0xff << (8 - b)) : (0xff << (8 - b))) & 0xff;
 		bits -= b;
 	}
 
@@ -154,7 +221,7 @@ function to_bits(mask) {
 	let bits = 0;
 
 	for (let i = 0, z = false; i < length(a); i++) {
-		z = z || !a[i];
+		z ||= !a[i];
 
 		while (!z && (a[i] & 0x80)) {
 			a[i] = (a[i] << 1) & 0xff;
@@ -227,15 +294,11 @@ function subnets_split_af(x) {
 	let rv = {};
 
 	for (let ag in to_array(x)) {
-		for (let a in filter(ag.addrs, a => (a.family == 4))) {
-			rv[0] = rv[0] || [];
-			push(rv[0], { ...a, invert: ag.invert });
-		}
+		for (let a in filter(ag.addrs, a => (a.family == 4)))
+			push(rv[0] ||= [], { ...a, invert: ag.invert });
 
-		for (let a in filter(ag.addrs, a => (a.family == 6))) {
-			rv[1] = rv[1] || [];
-			push(rv[1], { ...a, invert: ag.invert });
-		}
+		for (let a in filter(ag.addrs, a => (a.family == 6)))
+			push(rv[1] ||= [], { ...a, invert: ag.invert });
 	}
 
 	if (rv[0] || rv[1])
@@ -318,8 +381,8 @@ function infer_family(f, objects) {
 			}
 
 			return by
-				? sprintf('references IPv%d only %s but is restricted to IPv%d by %s', obj.family, desc, res, by)
-				: sprintf('is restricted to IPv%d but referenced %s is IPv%d only', res, desc, obj.family);
+				? `references IPv${obj.family} only ${desc} but is restricted to IPv${res} by ${by}`
+				: `is restricted to IPv${res} but referenced ${desc} is IPv${obj.family} only`;
 		}
 	}
 
@@ -333,15 +396,15 @@ function map_setmatch(set, match, proto) {
 	let fields = [];
 
 	for (let i, t in set.types) {
-		let dir = (((match.dir && match.dir[i]) || set.directions[i] || 'src') == 'src' ? 's' : 'd');
+		let dir = ((match.dir?.[i] || set.directions[i] || 'src') == 'src' ? 's' : 'd');
 
 		switch (t) {
 		case 'ipv4_addr':
-			fields[i] = sprintf('ip %saddr', dir);
+			fields[i] = `ip ${dir}addr`;
 			break;
 
 		case 'ipv6_addr':
-			fields[i] = sprintf('ip6 %saddr', dir);
+			fields[i] = `ip6 ${dir}addr`;
 			break;
 
 		case 'ether_addr':
@@ -352,7 +415,7 @@ function map_setmatch(set, match, proto) {
 			break;
 
 		case 'inet_service':
-			fields[i] = sprintf('%s %sport', proto, dir);
+			fields[i] = `${proto} ${dir}port`;
 			break;
 		}
 	}
@@ -360,20 +423,27 @@ function map_setmatch(set, match, proto) {
 	return fields;
 }
 
-function resolve_lower_devices(devstatus, devname) {
-	let dir = fs.opendir("/sys/class/net/" + devname);
+function resolve_lower_devices(devstatus, devname, require_hwoffload) {
+	let dir = fs.opendir(`/sys/class/net/${devname}`);
 	let devs = [];
 
 	if (dir) {
-		if (!devstatus || devstatus[devname]?.["hw-tc-offload"]) {
-			push(devs, devname);
-		}
-		else {
+		switch (devstatus[devname]?.devtype) {
+		case 'vlan':
+		case 'bridge':
 			let e;
 
 			while ((e = dir.read()) != null)
 				if (index(e, "lower_") === 0)
-					push(devs, ...resolve_lower_devices(devstatus, substr(e, 6)));
+					push(devs, ...resolve_lower_devices(devstatus, substr(e, 6), require_hwoffload));
+
+			break;
+
+		default:
+			if (!require_hwoffload || devstatus[devname]?.["hw-tc-offload"])
+				push(devs, devname);
+
+			break;
 		}
 
 		dir.close();
@@ -393,28 +463,29 @@ function nft_json_command(...args) {
 				item => (type(item) == "object" && !item.metainfo));
 		}
 		catch (e) {
-			warn(sprintf("Unable to parse nftables JSON output: %s\n", e));
+			warn(`Unable to parse nftables JSON output: ${e}\n`);
 		}
 
 		nft.close();
 	}
 	else {
-		warn(sprintf("Unable to popen() %s: %s\n", cmd, fs.error()));
+		warn(`Unable to popen() ${cmd}: ${fs.error()}\n`);
 	}
 
 	return info || [];
 }
 
 function nft_try_hw_offload(devices) {
-	let nft_test =
-		'add table inet fw4-hw-offload-test; ' +
-		'add flowtable inet fw4-hw-offload-test ft { ' +
-			'hook ingress priority 0; ' +
-			'devices = { "' + join('", "', devices) + '" }; ' +
-			'flags offload; ' +
-		'}';
+	let nft_test = `
+		add table inet fw4-hw-offload-test;
+		add flowtable inet fw4-hw-offload-test ft {
+			hook ingress priority 0;
+			devices = { "${join('", "', devices)}" };
+			flags offload;
+		}
+	`;
 
-	let rc = system(sprintf("/usr/sbin/nft -c '%s' 2>/dev/null", replace(nft_test, "'", "'\\''")));
+	let rc = system(`/usr/sbin/nft -c '${replace(nft_test, "'", "'\\''")}' 2>/dev/null`);
 
 	return (rc == 0);
 }
@@ -460,22 +531,21 @@ return {
 
 		let devstatus = null;
 		let devices = [];
+		let bus = ubus.connect();
+
+		if (bus) {
+			devstatus = bus.call("network.device", "status") || {};
+			bus.disconnect();
+		}
 
 		if (this.default_option("flow_offloading_hw")) {
-			let bus = ubus.connect();
-
-			if (bus) {
-				devstatus = bus.call("network.device", "status") || {};
-				bus.disconnect();
-			}
-
 			for (let zone in this.zones())
 				for (let device in zone.related_physdevs)
-					push(devices, ...resolve_lower_devices(devstatus, device));
+					push(devices, ...resolve_lower_devices(devstatus, device, true));
 
-			devices = uniq(devices);
+			devices = sort(uniq(devices));
 
-			if (nft_try_hw_offload(devices))
+			if (length(devices) && nft_try_hw_offload(devices))
 				return devices;
 
 			this.warn('Hardware flow offloading unavailable, falling back to software offloading');
@@ -485,10 +555,10 @@ return {
 		}
 
 		for (let zone in this.zones())
-			for (let device in zone.match_devices)
-				push(devices, ...resolve_lower_devices(null, device));
+			for (let device in zone.related_physdevs)
+				push(devices, ...resolve_lower_devices(devstatus, device, false));
 
-		return uniq(devices);
+		return sort(uniq(devices));
 	},
 
 	check_set_types: function() {
@@ -518,7 +588,7 @@ return {
 				state = json(fd.read("all"));
 			}
 			catch (e) {
-				warn(sprintf("Unable to parse '%s': %s\n", STATEFILE, e));
+				warn(`Unable to parse '${STATEFILE}': ${e}\n`);
 			}
 
 			fd.close();
@@ -540,7 +610,7 @@ return {
 		    bus.disconnect();
 		}
 		else {
-			warn(sprintf("Unable to connect to ubus: %s\n", ubus.error()));
+			warn(`Unable to connect to ubus: ${ubus.error()}\n`);
 		}
 
 
@@ -548,19 +618,18 @@ return {
 		// Gather logical network information from ubus
 		//
 
-		if (type(ifaces) == "object" && type(ifaces.interface) == "array") {
+		if (type(ifaces?.interface) == "array") {
 			for (let ifc in ifaces.interface) {
 				let net = {
 					up: ifc.up,
-					device: ifc.l3_device,
+					device: ifc.l3_device ?? ifc.device,
 					physdev: ifc.device,
 					zone: ifc.data?.zone
 				};
 
 				if (type(ifc["ipv4-address"]) == "array") {
 					for (let addr in ifc["ipv4-address"]) {
-						net.ipaddrs = net.ipaddrs || [];
-						push(net.ipaddrs, {
+						push(net.ipaddrs ||= [], {
 							family: 4,
 							addr: addr.address,
 							mask: to_mask(addr.mask, false),
@@ -571,8 +640,7 @@ return {
 
 				if (type(ifc["ipv6-address"]) == "array") {
 					for (let addr in ifc["ipv6-address"]) {
-						net.ipaddrs = net.ipaddrs || [];
-						push(net.ipaddrs, {
+						push(net.ipaddrs ||= [], {
 							family: 6,
 							addr: addr.address,
 							mask: to_mask(addr.mask, true),
@@ -584,8 +652,7 @@ return {
 				if (type(ifc["ipv6-prefix-assignment"]) == "array") {
 					for (let addr in ifc["ipv6-prefix-assignment"]) {
 						if (addr["local-address"]) {
-							net.ipaddrs = net.ipaddrs || [];
-							push(net.ipaddrs, {
+							push(net.ipaddrs ||= [], {
 								family: 6,
 								addr: addr["local-address"].address,
 								mask: to_mask(addr["local-address"].mask, true),
@@ -595,15 +662,15 @@ return {
 					}
 				}
 
-				if (type(ifc.data) == "object" && type(ifc.data.firewall) == "array") {
+				if (type(ifc.data?.firewall) == "array") {
 					let n = 0;
 
 					for (let rulespec in ifc.data.firewall) {
 						push(rules, {
 							...rulespec,
 
-							name: (rulespec.type != 'ipset') ? sprintf('ubus:%s[%s] %s %d', ifc.interface, ifc.proto, rulespec.type || 'rule', n) : rulespec.name,
-							device: rulespec.device || ifc.l3_device
+							name: (rulespec.type != 'ipset') ? `ubus:${ifc.interface}[${ifc.proto}] ${rulespec.type || 'rule'} ${n}` : rulespec.name,
+							device: rulespec.device ?? ifc.l3_device ?? ifc.device
 						});
 
 						n++;
@@ -621,14 +688,14 @@ return {
 
 		if (type(services) == "object") {
 			for (let svcname, service in services) {
-				if (type(service) == "object" && type(service.firewall) == "array") {
+				if (type(service?.firewall) == "array") {
 					let n = 0;
 
 					for (let rulespec in services[svcname].firewall) {
 						push(rules, {
 							...rulespec,
 
-							name: (rulespec.type != 'ipset') ? sprintf('ubus:%s %s %d', svcname, rulespec.type || 'rule', n) : rulespec.name
+							name: (rulespec.type != 'ipset') ? `ubus:${svcname} ${rulespec.type || 'rule'} ${n}` : rulespec.name
 						});
 
 						n++;
@@ -636,14 +703,14 @@ return {
 				}
 
 				for (let svcinst, instance in service) {
-					if (type(instance) == "object" && type(instance.firewall) == "array") {
+					if (type(instance?.firewall) == "array") {
 						let n = 0;
 
 						for (let rulespec in instance.firewall) {
 							push(rules, {
 								...rulespec,
 
-								name: (rulespec.type != 'ipset') ? sprintf('ubus:%s[%s] %s %d', svcname, svcinst, rulespec.type || 'rule', n) : rulespec.name
+								name: (rulespec.type != 'ipset') ? `ubus:${svcname}[${svcinst}] ${rulespec.type || 'rule'} ${n}` : rulespec.name
 							});
 
 							n++;
@@ -663,7 +730,6 @@ return {
 		let self = this;
 
 		this.state = use_statefile ? this.read_state() : null;
-		this.reflection_list = [];
 
 		this.cursor = uci.cursor();
 		this.cursor.load("firewall");
@@ -741,6 +807,26 @@ return {
 		this.cursor.foreach("firewall", "nat", n => self.parse_nat(n));
 
 
+		//
+		// Build list of includes
+		//
+
+		this.cursor.foreach("firewall", "include", i => self.parse_include(i));
+
+
+		//
+		// Discover automatic includes
+		//
+
+		if (this.default_option("auto_includes")) {
+			for (let position in [ 'ruleset-pre', 'ruleset-post', 'table-pre', 'table-post', 'chain-pre', 'chain-post' ])
+				for (let chain in (position in [ 'chain-pre', 'chain-post' ]) ? fs.lsdir(`/usr/share/nftables.d/${position}`) : [ null ])
+					for (let path in fs.glob(`/usr/share/nftables.d/${position}${chain ? `/${chain}` : ''}/*.nft`))
+						if (fs.access(path))
+							this.parse_include({ type: 'nftables', position, chain, path });
+		}
+
+
 		if (use_statefile) {
 			let fd = fs.open(STATEFILE, "w");
 
@@ -749,13 +835,14 @@ return {
 					zones: this.state.zones,
 					ipsets: this.state.ipsets,
 					networks: this.state.networks,
-					ubus_rules: this.state.ubus_rules
+					ubus_rules: this.state.ubus_rules,
+					includes: this.state.includes
 				});
 
 				fd.close();
 			}
 			else {
-				warn("Unable to write '%s': %s\n", STATEFILE, fs.error());
+				warn(`Unable to write '${STATEFILE}': ${fs.error()}\n`);
 			}
 		}
 	},
@@ -767,9 +854,9 @@ return {
 		let msg = sprintf(fmt, ...args);
 
 		if (getenv("TTY"))
-			warn("\033[33m", msg, "\033[m\n");
+			warn(`\033[33m${msg}\033[m\n`);
 		else
-			warn("[!] ", msg, "\n");
+			warn(`[!] ${msg}\n`);
 	},
 
 	get: function(sid, opt) {
@@ -784,7 +871,7 @@ return {
 		let rv = {};
 
 		for (let key, val in spec) {
-			let datatype = "parse_" + val[0],
+			let datatype = `parse_${val[0]}`,
 			    defval = val[1],
 			    flags = val[2] || 0,
 			    parsefn = (flags & PARSE_LIST) ? "parse_list" : "parse_opt";
@@ -795,15 +882,15 @@ return {
 				return false;
 
 			if (type(res) == "object" && res.invert && (flags & NO_INVERT)) {
-				this.warn_section(s, "option '" + key + '" must not be negated');
+				this.warn_section(s, `option '${key}' must not be negated`);
 				return false;
 			}
 
 			if (res != null) {
 				if (flags & DEPRECATED)
-					this.warn_section(s, "option '" + key + "' is deprecated by fw4");
+					this.warn_section(s, `option '${key}' is deprecated by fw4`);
 				else if (flags & UNSUPPORTED)
-					this.warn_section(s, "option '" + key + "' is not supported by fw4");
+					this.warn_section(s, `option '${key}' is not supported by fw4`);
 				else
 					rv[key] = res;
 			}
@@ -811,7 +898,7 @@ return {
 
 		for (let opt in s) {
 			if (index(opt, '.') != 0 && opt != 'type' && !exists(spec, opt)) {
-				this.warn_section(s, "specifies unknown option '" + opt + "'");
+				this.warn_section(s, `specifies unknown option '${opt}'`);
 			}
 		}
 
@@ -853,6 +940,7 @@ return {
 					return null;
 
 				m = to_mask(b, length(a) == 16);
+				b = max(-1, b);
 			}
 
 			return [{
@@ -931,7 +1019,7 @@ return {
 				c++;
 			});
 
-			return sprintf("@%s[%d]", s[".type"], c);
+			return `@${s['.type']}[${c}]`;
 		}
 
 		return s[".name"];
@@ -1036,14 +1124,10 @@ return {
 		let dir = split(rv.val, /[ \t,]/);
 
 		for (let i = 0; i < 3 && i < length(dir); i++) {
-			if (dir[i] == "dst" || dir[i] == "dest") {
-				rv.dir = rv.dir || [];
-				rv.dir[i] = "dst";
-			}
-			else if (dir[i] == "src") {
-				rv.dir = rv.dir || [];
-				rv.dir[i] = "src";
-			}
+			if (dir[i] == "dst" || dir[i] == "dest")
+				(rv.dir ||= [])[i] = "dst";
+			else if (dir[i] == "src")
+				(rv.dir ||= [])[i] = "src";
 		}
 
 		return length(rv.name) ? rv : null;
@@ -1055,7 +1139,7 @@ return {
 		if (!rv)
 			return null;
 
-		let helper = filter(this.state.helpers, h => (h.name == rv.val))[0];
+		let helper = filter(this.state.helpers, h => (h.name == rv.val))?.[0];
 
 		return helper ? { ...rv, ...helper } : null;
 	},
@@ -1256,26 +1340,21 @@ return {
 	},
 
 	parse_date: function(val) {
-		let m = match(val, /^([0-9-]+)T([0-9:]+)$/);
-		let d = m ? match(m[1], /^([0-9]{1,4})(-([0-9]{1,2})(-([0-9]{1,2}))?)?$/) : null;
-		let t = this.parse_time(m[2]);
+		let d = match(val, /^([0-9]{4})(-([0-9]{1,2})(-([0-9]{1,2})(T([0-9:]+))?)?)?$/);
 
-		d[3] = d[3] || 1;
-		d[5] = d[5] || 1;
-
-		if (d == null || d[1] < 1970 || d[1] > 2038 || d[3] < 1 || d[3] > 12 || d[5] < 1 || d[5] > 31)
+		if (d == null || d[1] < 1970 || d[1] > 2038 || d[3] > 12 || d[5] > 31)
 			return null;
 
-		if (m[2] && !t)
+		let t = this.parse_time(d[7] ?? "0");
+
+		if (t == null)
 			return null;
 
 		return {
 			year:  +d[1],
-			month: +d[3],
-			day:   +d[5],
-			hour:  t ? +t[1] : 0,
-			min:   t ? +t[3] : 0,
-			sec:   t ? +t[5] : 0
+			month: +d[3] || 1,
+			day:   +d[5] || 1,
+			...t
 		};
 	},
 
@@ -1312,8 +1391,7 @@ return {
 			if (!day)
 				return null;
 
-			rv.days = rv.days || {};
-			rv.days[day] = true;
+			(rv.days ||= {})[day] = true;
 		}
 
 		rv.days = keys(rv.days);
@@ -1333,8 +1411,7 @@ return {
 			if (day < 1 || day > 31)
 				return null;
 
-			rv.days = rv.days || [];
-			rv.days[day] = true;
+			(rv.days ||= [])[day] = true;
 		}
 
 		return rv.days ? rv : null;
@@ -1453,25 +1530,25 @@ return {
 			case 'ipv4_addr':
 				ip = filter(this.parse_subnet(values[i]), a => (a.family == 4));
 
-				switch (length(ip)) {
+				switch (length(ip) ?? 0) {
 				case 0: return null;
 				case 1: break;
 				default: this.warn("Set entry '%s' resolves to multiple addresses, using first one", values[i]);
 				}
 
-				rv[i] = ("net" in set.fw4types) ? ip[0].addr + "/" + ip[0].bits : ip[0].addr;
+				rv[i] = ("net" in set.fw4types) ? `${ip[0].addr}/${ip[0].bits}` : ip[0].addr;
 				break;
 
 			case 'ipv6_addr':
 				ip = filter(this.parse_subnet(values[i]), a => (a.family == 6));
 
-				switch(length(ip)) {
+				switch (length(ip) ?? 0) {
 				case 0: return null;
 				case 1: break;
 				case 2: this.warn("Set entry '%s' resolves to multiple addresses, using first one", values[i]);
 				}
 
-				rv[i] = ("net" in set.fw4types) ? ip[0].addr + "/" + ip[0].bits : ip[0].addr;
+				rv[i] = ("net" in set.fw4types) ? `${ip[0].addr}/${ip[0].bits}` : ip[0].addr;
 
 				break;
 
@@ -1501,6 +1578,29 @@ return {
 		return length(rv) ? rv : null;
 	},
 
+	parse_includetype: function(val) {
+		return this.parse_enum(val, [
+			"script",
+			"nftables"
+		]);
+	},
+
+	parse_includeposition: function(val) {
+		return replace(this.parse_enum(val, [
+			"ruleset-prepend",
+			"ruleset-postpend",
+			"ruleset-append",
+
+			"table-prepend",
+			"table-postpend",
+			"table-append",
+
+			"chain-prepend",
+			"chain-postpend",
+			"chain-append"
+		]), "postpend", "append");
+	},
+
 	parse_string: function(val) {
 		return "" + val;
 	},
@@ -1510,7 +1610,7 @@ return {
 
 		if (val === null) {
 			if (flags & REQUIRED) {
-				this.warn_section(s, "option '" + opt + "' is mandatory but not set");
+				this.warn_section(s, `option '${opt}' is mandatory but not set`);
 				return NaN;
 			}
 
@@ -1518,7 +1618,7 @@ return {
 		}
 
 		if (type(val) == "array") {
-			this.warn_section(s, "option '" + opt + "' must not be a list");
+			this.warn_section(s, `option '${opt}' must not be a list`);
 			return NaN;
 		}
 		else if (val == null) {
@@ -1528,7 +1628,7 @@ return {
 		let res = this[fn](val);
 
 		if (res === null) {
-			this.warn_section(s, "option '" + opt + "' specifies invalid value '" + val + "'");
+			this.warn_section(s, `option '${opt}' specifies invalid value '${val}'`);
 			return NaN;
 		}
 
@@ -1541,7 +1641,7 @@ return {
 
 		if (val == null) {
 			if (flags & REQUIRED) {
-				this.warn_section(s, "option '" + opt + "' is mandatory but not set");
+				this.warn_section(s, `option '${opt}' is mandatory but not set`);
 				return NaN;
 			}
 
@@ -1552,7 +1652,7 @@ return {
 			let res = this[fn](val);
 
 			if (res === null) {
-				this.warn_section(s, "option '" + opt + "' specifies invalid value '" + val + "'");
+				this.warn_section(s, `option '${opt}' specifies invalid value '${val}'`);
 				return NaN;
 			}
 
@@ -1567,36 +1667,37 @@ return {
 
 	quote: function(s, force) {
 		if (force === true || !match(s, /^([0-9A-Fa-f:.\/-]+)( \. [0-9A-Fa-f:.\/-]+)*$/))
-			return sprintf('"%s"', replace(s + "", /(["\\])/g, '\\$1'));
+			return `"${replace(s + "", /(["\\])/g, '\\$1')}"`;
 
 		return s;
 	},
 
 	cidr: function(a) {
 		if (a.range)
-			return sprintf("%s-%s", a.addr, a.addr2);
+			return `${a.addr}-${a.addr2}`;
 
 		if ((a.family == 4 && a.bits == 32) ||
 		    (a.family == 6 && a.bits == 128))
 		    return a.addr;
 
 		if (a.bits >= 0)
-			return sprintf("%s/%d", apply_mask(a.addr, a.bits), a.bits);
+			return `${apply_mask(a.addr, a.bits)}/${a.bits}`;
 
-		return sprintf("%s/%s", a.addr, a.mask);
+		return `${a.addr}/${a.mask}`;
 	},
 
 	host: function(a, v6brackets) {
 		return a.range
-			? sprintf("%s-%s", a.addr, a.addr2)
-			: sprintf((a.family == 6 && v6brackets) ? "[%s]" : "%s", apply_mask(a.addr, a.bits));
+			? `${a.addr}-${a.addr2}`
+			: (a.family == 6 && v6brackets)
+				? `[${apply_mask(a.addr, a.bits)}]` : apply_mask(a.addr, a.bits);
 	},
 
 	port: function(p) {
 		if (p.min == p.max)
-			return sprintf('%d', p.min);
+			return `${p.min}`;
 
-		return sprintf('%d-%d', p.min, p.max);
+		return `${p.min}-${p.max}`;
 	},
 
 	set: function(v, force) {
@@ -1605,7 +1706,7 @@ return {
 		v = filter(to_array(v), item => !seen[item]++);
 
 		if (force || length(v) != 1)
-			return sprintf('{ %s }', join(', ', map(v, this.quote)));
+			return `{ ${join(', ', map(v, this.quote))} }`;
 
 		return this.quote(v[0]);
 	},
@@ -1637,6 +1738,22 @@ return {
 		}
 	},
 
+	l4proto: function(family, proto) {
+		switch (proto.name) {
+		case 'icmp':
+			switch (family ?? 0) {
+			case 0:
+				return this.set(['icmp', 'ipv6-icmp']);
+
+			case 6:
+				return 'ipv6-icmp';
+			}
+
+		default:
+			return proto.name;
+		}
+	},
+
 	datetime: function(stamp) {
 		return sprintf('"%04d-%02d-%02d %02d:%02d:%02d"',
 		               stamp.year, stamp.month, stamp.day,
@@ -1645,6 +1762,10 @@ return {
 
 	date: function(stamp) {
 		return sprintf('"%04d-%02d-%02d"', stamp.year, stamp.month, stamp.day);
+	},
+
+	datestamp: function(stamp) {
+		return exists(stamp, 'hour') ? this.datetime(stamp) : this.date(stamp);
 	},
 
 	time: function(stamp) {
@@ -1656,16 +1777,7 @@ return {
 	},
 
 	is_loopback_dev: function(dev) {
-		let fd = fs.open(sprintf("/sys/class/net/%s/flags", dev), "r");
-
-		if (!fd)
-			return false;
-
-		let flags = +fd.read("line");
-
-		fd.close();
-
-		return !!(flags & 0x8);
+		return !!(+fs.readfile(`/sys/class/net/${dev}/flags`) & 0x8);
 	},
 
 	is_loopback_addr: function(addr) {
@@ -1717,18 +1829,47 @@ return {
 		return this.state.ipsets;
 	},
 
+	includes: function(position, chain) {
+		let stmts = [];
+		let pad = '';
+		let pre = '';
+
+		switch (position) {
+		case 'table-prepend':
+		case 'table-append':
+			pad = '\t';
+			pre = '\n';
+			break;
+
+		case 'chain-prepend':
+		case 'chain-append':
+			pad = '\t\t';
+			break;
+
+		default:
+			pre = '\n';
+		}
+
+		push(stmts, pre);
+
+		for (let inc in this.state.includes)
+			if (inc.type == 'nftables' && inc.position == position && (!chain || inc.chain == chain))
+				push(stmts, `${pad}include "${inc.path}"\n`);
+
+		print(length(stmts) > 1 ? join('', stmts) : '');
+	},
+
 	parse_setfile: function(set, cb) {
 		let fd = fs.open(set.loadfile, "r");
 
 		if (!fd) {
-			warn(sprintf("Unable to load file '%s' for set '%s': %s\n",
-			             set.loadfile, set.name, fs.error()));
+			warn(`Unable to load file '${set.loadfile}' for set '${set.name}': ${fs.error()}\n`);
 			return;
 		}
 
-		let line = null, count = 0;
+		let count = 0;
 
-		while ((line = fd.read("line")) !== "") {
+		for (let line = fd.read("line"); length(line); line = fd.read("line")) {
 			line = trim(line);
 
 			if (length(line) == 0 || ord(line) == 35)
@@ -1737,8 +1878,7 @@ return {
 			let v = this.parse_ipsetentry(line, set);
 
 			if (!v) {
-				this.warn("Skipping invalid entry '%s' in file '%s' for set '%s'",
-				          line, set.loadfile, set.name);
+				this.warn(`Skipping invalid entry '${line}' in file '${set.loadfile}' for set '${set.name}'`);
 				continue;
 			}
 
@@ -1795,10 +1935,9 @@ return {
 			return;
 		}
 
-		helper.available = ((fs.stat("/sys/module/" + helper.module) || {}).type == "directory");
+		helper.available = (fs.stat(`/sys/module/${helper.module}`)?.type == "directory");
 
-		this.state.helpers = this.state.helpers || [];
-		push(this.state.helpers, helper);
+		push(this.state.helpers ||= [], helper);
 	},
 
 	parse_defaults: function(data) {
@@ -1833,7 +1972,9 @@ return {
 			custom_chains: [ "bool", null, UNSUPPORTED ],
 			disable_ipv6: [ "bool", null, UNSUPPORTED ],
 			flow_offloading: [ "bool", "0" ],
-			flow_offloading_hw: [ "bool", "0" ]
+			flow_offloading_hw: [ "bool", "0" ],
+
+			auto_includes: [ "bool", "1" ]
 		});
 
 		if (defs.synflood_protect === null)
@@ -1896,9 +2037,11 @@ return {
 			this.warn_section(data, "is disabled, ignoring section");
 			return;
 		}
-		else if (zone.helper && !zone.helper.available) {
-			this.warn_section(data, "uses unavailable ct helper '" + zone.helper.name + "', ignoring section");
-			return;
+
+		for (let helper in zone.helper) {
+			if (!helper.available) {
+				this.warn_section(data, `uses unavailable ct helper '${zone.helper.name}'`);
+			}
 		}
 
 		if (this.state.defaults && !this.state.defaults.fullcone) {
@@ -1914,7 +2057,7 @@ return {
 			return;
 		}
 
-		if (this.state.defaults && this.state.defaults.auto_helper === false)
+		if (this.state.defaults?.auto_helper === false)
 			zone.auto_helper = false;
 
 		let match_devices = [];
@@ -1928,7 +2071,9 @@ return {
 				push(related_ubus_networks, { invert: false, device: name });
 		}
 
-		for (let e in [ ...to_array(zone.network), ...related_ubus_networks ]) {
+		zone.network = [ ...to_array(zone.network), ...related_ubus_networks ];
+
+		for (let e in zone.network) {
 			if (exists(this.state.networks, e.device)) {
 				let net = this.state.networks[e.device];
 
@@ -1973,12 +2118,11 @@ return {
 		};
 
 		let family = infer_family(zone.family, [
-			zone.helper, "ct helper",
 			match_subnets, "subnet list"
 		]);
 
 		if (type(family) == "string") {
-			this.warn_section(data, family + ", skipping");
+			this.warn_section(data, `${family}, skipping`);
 			return;
 		}
 
@@ -1989,7 +2133,7 @@ return {
 			let m = match(device.device, /^([^+]*)(\+)?$/);
 
 			if (!m) {
-				this.warn_section(data, "skipping invalid wildcard pattern '" + device.device + '"');
+				this.warn_section(data, `skipping invalid wildcard pattern '${device.device}'`);
 				continue;
 			}
 
@@ -2043,11 +2187,11 @@ return {
 
 				// we need to emit one or two AF specific rules
 				else {
-					if (family_is_ipv4(zone) && length(match_subnets[0]))
+					if (!family || family == 4)
 						for (let subnets in subnets_group_by_masking(match_subnets[0]))
 							add_rule(4, devgroup, subnets, zone);
 
-					if (family_is_ipv6(zone) && length(match_subnets[1]))
+					if (!family || family == 6)
 						for (let subnets in subnets_group_by_masking(match_subnets[1]))
 							add_rule(6, devgroup, subnets, zone);
 				}
@@ -2093,9 +2237,8 @@ return {
 					continue;
 
 				for (let proto in helper.proto) {
-					this.state.rules = this.state.rules || [];
-					push(this.state.rules, {
-						chain: "helper_" + zone.name,
+					push(this.state.rules ||= [], {
+						chain: `helper_${zone.name}`,
 						family: helper.family,
 						name: helper.description || helper.name,
 						proto: proto,
@@ -2108,8 +2251,7 @@ return {
 			}
 		}
 
-		this.state.zones = this.state.zones || [];
-		push(this.state.zones, zone);
+		push(this.state.zones ||= [], zone);
 	},
 
 	parse_forwarding: function(data) {
@@ -2140,59 +2282,33 @@ return {
 				proto: { any: true }
 			};
 
-			f.name = fwd.name || sprintf("Accept %s to %s forwarding",
-				fwd.src.any ? "any" : fwd.src.zone.name,
-				fwd.dest.any ? "any" : fwd.dest.zone.name);
-
-			f.chain = fwd.src.any ? "forward" : sprintf("forward_%s", fwd.src.zone.name);
+			f.name ||= `Accept ${fwd.src.any ? "any" : fwd.src.zone.name} to ${fwd.dest.any ? "any" : fwd.dest.zone.name} ${family ? `${this.nfproto(family, true)} ` : ''}forwarding`;
+			f.chain = fwd.src.any ? "forward" : `forward_${fwd.src.zone.name}`;
 
 			if (fwd.dest.any)
 				f.target = "accept";
 			else
-				f.jump_chain = sprintf("accept_to_%s", fwd.dest.zone.name);
+				f.jump_chain = `accept_to_${fwd.dest.zone.name}`;
 
-			this.state.rules = this.state.rules || [];
-			push(this.state.rules, f);
+			push(this.state.rules ||= [], f);
 		};
 
 
-		let family = fwd.family;
-
 		/* inherit family restrictions from related zones */
-		if (family === 0 || family === null) {
-			let f1 = fwd.src.zone ? fwd.src.zone.family : 0;
-			let f2 = fwd.dest.zone ? fwd.dest.zone.family : 0;
+		let family = infer_family(fwd.family, [
+			fwd.src?.zone, "source zone",
+			fwd.dest?.zone, "destination zone"
+		]);
 
-			if (f1 && f2 && f1 != f2) {
-				this.warn_section(data,
-					sprintf("references src %s restricted to %s and dest %s restricted to %s, ignoring forwarding",
-					        fwd.src.zone.name, this.nfproto(f1, true),
-					        fwd.dest.zone.name, this.nfproto(f2, true)));
-
-				return;
-			}
-			else if (f1) {
-				this.warn_section(data,
-					sprintf("inheriting %s restriction from src %s",
-					        this.nfproto(f1, true), fwd.src.zone.name));
-
-				family = f1;
-			}
-			else if (f2) {
-				this.warn_section(data,
-					sprintf("inheriting %s restriction from dest %s",
-					        this.nfproto(f2, true), fwd.dest.zone.name));
-
-				family = f2;
-			}
+		if (type(family) == "string") {
+			this.warn_section(data, `${family}, skipping`);
+			return;
 		}
 
 		add_rule(family, fwd);
 
 		if (fwd.dest.zone)
 			fwd.dest.zone.dflags.accept = true;
-		
-		push(this.reflection_list, fwd.src);
 	},
 
 	parse_rule: function(data) {
@@ -2244,6 +2360,7 @@ return {
 			set_dscp: [ "dscp", null, NO_INVERT ],
 
 			counter: [ "bool", "1" ],
+			log: [ "string" ],
 
 			target: [ "target" ]
 		});
@@ -2258,7 +2375,7 @@ return {
 		}
 
 		if (rule.target in ["helper", "notrack"] && (!rule.src || !rule.src.zone)) {
-			this.warn_section(data, "must specify a source zone for target '" + rule.target + "'");
+			this.warn_section(data, `must specify a source zone for target '${rule.target}'`);
 			return;
 		}
 		else if (rule.target == "dscp" && !rule.set_dscp) {
@@ -2278,13 +2395,22 @@ return {
 			return;
 		}
 
+		switch (this.parse_bool(rule.log)) {
+		case true:
+			rule.log = `${rule.name}: `;
+			break;
+
+		case false:
+			delete rule.log;
+		}
+
 		let ipset;
 
 		if (rule.ipset) {
-			ipset = filter(this.state.ipsets, s => (s.name == rule.ipset.name))[0];
+			ipset = filter(this.state.ipsets, s => (s.name == rule.ipset.name))?.[0];
 
 			if (!ipset) {
-				this.warn_section(data, "references unknown set '" + rule.ipset.name + "'");
+				this.warn_section(data, `references unknown set '${rule.ipset.name}'`);
 				return;
 			}
 
@@ -2294,7 +2420,7 @@ return {
 			}
 		}
 
-		let need_src_action_chain = (rule) => (rule.src && rule.src.zone && rule.src.zone.log && rule.target != "accept");
+		let need_src_action_chain = (rule) => (rule.src?.zone?.log && rule.target != "accept");
 
 		let add_rule = (family, proto, saddrs, daddrs, sports, dports, icmptypes, icmpcodes, ipset, rule) => {
 			let r = {
@@ -2317,7 +2443,7 @@ return {
 				smacs_pos: map(filter_pos(rule.src_mac), m => m.mac),
 				smacs_neg: map(filter_neg(rule.src_mac), m => m.mac),
 				icmp_types: map(icmptypes, i => (family == 4 ? i.type : i.type6)),
-				icmp_codes: map(icmpcodes, ic => sprintf('%d . %d', (family == 4) ? ic.type : ic.type6, (family == 4) ? ic.code_min : ic.code6_min))
+				icmp_codes: map(icmpcodes, ic => `${(family == 4) ? ic.type : ic.type6} . ${(family == 4) ? ic.code_min : ic.code6_min}`)
 			};
 
 			if (!length(r.icmp_types))
@@ -2346,11 +2472,11 @@ return {
 			}
 
 			if (r.target == "notrack") {
-				r.chain = sprintf("notrack_%s", r.src.zone.name);
+				r.chain = `notrack_${r.src.zone.name}`;
 				r.src.zone.dflags.notrack = true;
 			}
 			else if (r.target == "helper") {
-				r.chain = sprintf("helper_%s", r.src.zone.name);
+				r.chain = `helper_${r.src.zone.name}`;
 				r.src.zone.dflags.helper = true;
 			}
 			else if (r.target == "mark" || r.target == "dscp") {
@@ -2380,7 +2506,7 @@ return {
 
 				if (r.src) {
 					if (!r.src.any)
-						r.chain = sprintf("%s_%s", r.dest ? "forward" : "input", r.src.zone.name);
+						r.chain = `${r.dest ? "forward" : "input"}_${r.src.zone.name}`;
 					else
 						r.chain = r.dest ? "forward" : "input";
 				}
@@ -2393,12 +2519,12 @@ return {
 				}
 
 				if (r.dest && !r.dest.any) {
-					r.jump_chain = sprintf("%s_to_%s", r.target, r.dest.zone.name);
+					r.jump_chain = `${r.target}_to_${r.dest.zone.name}`;
 					r.dest.zone.dflags[r.target] = true;
 				}
 				else if (need_src_action_chain(r)) {
-					r.jump_chain = sprintf("%s_from_%s", r.target, r.src.zone.name);
-					r.src.zone.dflags[r.target] = true;
+					r.jump_chain = `${r.target}_from_${r.src.zone.name}`;
+					r.src.zone.sflags[r.target] = true;
 				}
 				else if (r.target == "reject")
 					r.jump_chain = "handle_reject";
@@ -2407,8 +2533,7 @@ return {
 			if (r.device)
 				r[r.direction ? "oifnames" : "iifnames"] = [ r.device.device ];
 
-			this.state.rules = this.state.rules || [];
-			push(this.state.rules, r);
+			push(this.state.rules ||= [], r);
 		};
 
 		for (let proto in rule.proto) {
@@ -2447,7 +2572,7 @@ return {
 			]);
 
 			if (type(family) == "string") {
-				this.warn_section(data, family + ", skipping");
+				this.warn_section(data, `${family}, skipping`);
 				continue;
 			}
 
@@ -2551,6 +2676,7 @@ return {
 			reflection_zone: [ "zone_ref", null, PARSE_LIST ],
 
 			counter: [ "bool", "1" ],
+			log: [ "string" ],
 
 			target: [ "target", "dnat" ]
 		});
@@ -2569,13 +2695,22 @@ return {
 			redir.target = "dnat";
 		}
 
+		switch (this.parse_bool(redir.log)) {
+		case true:
+			redir.log = `${redir.name}: `;
+			break;
+
+		case false:
+			delete redir.log;
+		}
+
 		let ipset;
 
 		if (redir.ipset) {
-			ipset = filter(this.state.ipsets, s => (s.name == redir.ipset.name))[0];
+			ipset = filter(this.state.ipsets, s => (s.name == redir.ipset.name))?.[0];
 
 			if (!ipset) {
-				this.warn_section(data, "references unknown set '" + redir.ipset.name + "'");
+				this.warn_section(data, `references unknown set '${redir.ipset.name}'`);
 				return;
 			}
 
@@ -2584,8 +2719,6 @@ return {
 				return;
 			}
 		}
-
-		redir.reflection_zone = this.reflection_list;
 
 		let resolve_dest = (redir) => {
 			for (let zone in this.state.zones) {
@@ -2624,12 +2757,12 @@ return {
 				return this.warn_section(data, "must not use non-contiguous masks in 'dest_ip'");
 
 			if (!redir.dest && redir.dest_ip && resolve_dest(redir))
-				this.warn_section(data, "does not specify a destination, assuming '" + redir.dest.zone.name + "'");
+				this.warn_section(data, `does not specify a destination, assuming '${redir.dest.zone.name}'`);
 
 			if (!redir.dest_port)
 				redir.dest_port = redir.src_dport;
 
-			if (redir.reflection && redir.dest && redir.dest.zone && redir.src.zone.masq) {
+			if (redir.reflection && redir.dest?.zone && redir.src.zone.masq) {
 				redir.dest.zone.dflags.accept = true;
 				redir.dest.zone.dflags.dnat = true;
 				redir.dest.zone.dflags.snat = true;
@@ -2658,7 +2791,6 @@ return {
 
 			redir.dest.zone.dflags[redir.target] = true;
 		}
-
 
 		let add_rule = (family, proto, saddrs, daddrs, raddrs, sport, dport, rport, ipset, redir) => {
 			let r = {
@@ -2696,7 +2828,7 @@ return {
 
 			switch (r.target) {
 			case "dnat":
-				r.chain = sprintf("dstnat_%s", r.src.zone.name);
+				r.chain = `dstnat_${r.src.zone.name}`;
 				r.src.zone.dflags.dnat = true;
 
 				if (!r.raddr)
@@ -2705,13 +2837,12 @@ return {
 				break;
 
 			case "snat":
-				r.chain = sprintf("srcnat_%s", r.dest.zone.name);
+				r.chain = `srcnat_${r.dest.zone.name}`;
 				r.dest.zone.dflags.snat = true;
 				break;
 			}
 
-			this.state.redirects = this.state.redirects || [];
-			push(this.state.redirects, r);
+			push(this.state.redirects ||= [], r);
 		};
 
 		let to_hostaddr = (a) => {
@@ -2776,7 +2907,7 @@ return {
 			]);
 
 			if (type(family) == "string") {
-				this.warn_section(data, family + ", skipping");
+				this.warn_section(data, `${family}, skipping`);
 				continue;
 			}
 
@@ -2784,7 +2915,7 @@ return {
 			if (redir.target == "dnat" && redir.reflection &&
 			    (length(rip[0]) || length(rip[1])) && redir.src?.zone && redir.dest?.zone) {
 				let refredir = {
-					name: redir.name + " (reflection)",
+					name: `${redir.name} (reflection)`,
 
 					helper: redir.helper,
 
@@ -2809,8 +2940,7 @@ return {
 				for (let rzone in rzones) {
 					if (!is_family(rzone, family)) {
 						this.warn_section(data,
-							sprintf("is restricted to IPv%d but referenced reflection zone is IPv%d only, skipping",
-							        family, rzone.family));
+							`is restricted to IPv${family} but referenced reflection zone is IPv${rzone.family} only, skipping`);
 						continue;
 					}
 
@@ -2842,7 +2972,7 @@ return {
 							}
 
 							if (!snat_addr) {
-								this.warn_section(data, (redir.reflection_src || "external") + " rewrite IP cannot be determined, disabling reflection");
+								this.warn_section(data, `${redir.reflection_src || "external"} rewrite IP cannot be determined, disabling reflection`);
 							}
 							else if (!length(iaddrs[i])) {
 								this.warn_section(data, "internal address range cannot be determined, disabling reflection");
@@ -2910,7 +3040,7 @@ return {
 			enabled: [ "bool", "1" ],
 
 			name: [ "string", this.section_id(data[".name"]) ],
-			family: [ "family", "4" ],
+			family: [ "family" ],
 
 			src: [ "zone_ref" ],
 			device: [ "string" ],
@@ -2944,6 +3074,9 @@ return {
 			monthdays: [ "monthdays", null, UNSUPPORTED ],
 
 			mark: [ "mark" ],
+
+			counter: [ "bool", "1" ],
+			log: [ "string" ],
 
 			target: [ "target", "masquerade" ]
 		});
@@ -2985,8 +3118,14 @@ return {
 			return;
 		}
 
-		if (snat.src && snat.src.zone)
-			snat.src.zone.dflags.snat = true;
+		switch (this.parse_bool(snat.log)) {
+		case true:
+			snat.log = `${snat.name}: `;
+			break;
+
+		case false:
+			delete snat.log;
+		}
 
 		let add_rule = (family, proto, saddrs, daddrs, raddrs, sport, dport, rport, snat) => {
 			let n = {
@@ -3010,11 +3149,10 @@ return {
 				raddr: raddrs ? raddrs[0] : null,
 				rport: rport,
 
-				chain: (snat.src && snat.src.zone) ? sprintf("srcnat_%s", snat.src.zone.name) : "srcnat"
+				chain: snat.src?.zone ? `srcnat_${snat.src.zone.name}` : "srcnat"
 			};
 
-			this.state.redirects = this.state.redirects || [];
-			push(this.state.redirects, n);
+			push(this.state.redirects ||= [], n);
 		};
 
 		for (let proto in snat.proto) {
@@ -3037,18 +3175,20 @@ return {
 			if (length(rip[0]) > 1 || length(rip[1]) > 1)
 				this.warn_section(data, "specifies multiple rewrite addresses, using only first one");
 
-			/* inherit family restrictions from related zones */
-			if (family === 0 || family === null) {
-				let f = (rule.src && rule.src.zone) ? rule.src.zone.family : 0;
+			family = infer_family(family, [
+				sip, "source IP",
+				dip, "destination IP",
+				rip, "rewrite IP",
+				snat.src?.zone, "source zone"
+			]);
 
-				if (f) {
-					this.warn_section(r,
-						sprintf("inheriting %s restriction from src %s",
-						        this.nfproto(f1, true), rule.src.zone.name));
-
-					family = f;
-				}
+			if (type(family) == "string") {
+				this.warn_section(data, `${family}, skipping`);
+				continue;
 			}
+
+			if (snat.src?.zone)
+				snat.src.zone.dflags.snat = true;
 
 			/* if no family was configured, infer target family from IP addresses */
 			if (family === null) {
@@ -3057,7 +3197,7 @@ return {
 				else if ((length(sip[1]) || length(dip[1]) || length(rip[1])) && !length(sip[0]) && !length(dip[0]) && !length(rip[0]))
 					family = 6;
 				else
-					family = 0;
+					family = 4; /* default to IPv4 only for backwards compatibility, unless an explict family any was configured */
 			}
 
 			/* check if there's no AF specific bits, in this case we can do an AF agnostic rule */
@@ -3080,12 +3220,80 @@ return {
 		}
 	},
 
+	parse_include: function(data) {
+		let inc = this.parse_options(data, {
+			enabled: [ "bool", "1" ],
+
+			path: [ "string", null, REQUIRED ],
+			type: [ "includetype", "script" ],
+
+			fw4_compatible: [ "bool", data.path != "/etc/firewall.user" ],
+
+			family: [ "family", null, UNSUPPORTED ],
+			reload: [ "bool", null, UNSUPPORTED ],
+
+			position: [ "includeposition" ],
+			chain: [ "string" ]
+		});
+
+		if (!inc.enabled) {
+			this.warn_section(data, "is disabled, ignoring section");
+			return;
+		}
+
+		if (inc.type == "script" && !inc.fw4_compatible) {
+			this.warn_section(data, "is not marked as compatible with fw4, ignoring section");
+			this.warn_section(data, "requires 'option fw4_compatible 1' to be considered compatible");
+			return;
+		}
+
+		for (let opt in [ "table", "chain", "position" ]) {
+			if (inc.type != "nftables" && inc[opt]) {
+				this.warn_section(data, `must not specify '${opt}' for non-nftables includes, ignoring section`);
+				return;
+			}
+		}
+
+		switch (inc.position ??= 'table-append') {
+		case 'ruleset-prepend':
+		case 'ruleset-append':
+		case 'table-prepend':
+		case 'table-append':
+			if (inc.chain)
+				this.warn_section(data, `specifies 'chain' which has no effect for position ${inc.position}`);
+
+			delete inc.chain;
+			break;
+
+		case 'chain-prepend':
+		case 'chain-append':
+			if (!inc.chain) {
+				this.warn_section(data, `must specify 'chain' for position ${inc.position}, ignoring section`);
+				return;
+			}
+
+			break;
+		}
+
+		let path = fs.readlink(inc.path) ?? inc.path;
+
+		if (!fs.access(path)) {
+			this.warn_section(data, `specifies unreachable path '${path}', ignoring section`);
+			return;
+		}
+
+		if (!data['.name'])
+			this.warn(`Automatically including '${path}'`);
+
+		push(this.state.includes ||= [], { ...inc, path });
+	},
+
 	parse_ipset: function(data) {
 		let ipset = this.parse_options(data, {
 			enabled: [ "bool", "1" ],
 			reload_set: [ "bool" ],
 			counters: [ "bool" ],
-			comment: [ "bool" ],
+			comment: [ "string" ],
 
 			name: [ "string", null, REQUIRED ],
 			family: [ "family", "4" ],
@@ -3166,17 +3374,21 @@ return {
 			interval: interval
 		};
 
-		let self = this;
+		if (s.interval)
+			push(s.flags ??= [], 'interval');
+
+		if (s.timeout >= 0)
+			push(s.flags ??= [], 'timeout');
+
 		s.entries = filter(map(ipset.entry, (e) => {
-			let v = self.parse_ipsetentry(e, s);
+			let v = this.parse_ipsetentry(e, s);
 
 			if (!v)
-				self.warn_section(data, "ignoring invalid ipset entry '" + e + "'");
+				this.warn_section(data, `ignoring invalid ipset entry '${e}'`);
 
 			return v;
 		}), (e) => (e != null));
 
-		this.state.ipsets = this.state.ipsets || [];
-		push(this.state.ipsets, s);
+		push(this.state.ipsets ||= [], s);
 	}
 };
