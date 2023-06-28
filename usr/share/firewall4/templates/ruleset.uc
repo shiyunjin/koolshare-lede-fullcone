@@ -160,9 +160,7 @@ table inet fw4 {
 {%  for (let rule in fw4.rules("input_"+zone.name)): %}
 		{%+ include("rule.uc", { fw4, rule }) %}
 {%  endfor %}
-{%  if (zone.dflags.dnat): %}
 		ct status dnat accept comment "!fw4: Accept port redirections"
-{%  endif %}
 		jump {{ zone.input }}_from_{{ zone.name }}
 	}
 
@@ -177,9 +175,7 @@ table inet fw4 {
 {%  for (let rule in fw4.rules("forward_"+zone.name)): %}
 		{%+ include("rule.uc", { fw4, rule }) %}
 {%  endfor %}
-{%  if (zone.dflags.dnat): %}
 		ct status dnat accept comment "!fw4: Accept port forwards"
-{%  endif %}
 		jump {{ zone.forward }}_to_{{ zone.name }}
 	}
 
